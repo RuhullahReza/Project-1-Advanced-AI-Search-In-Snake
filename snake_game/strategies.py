@@ -81,6 +81,10 @@ class GreedyStrategy(MoveStrategy):
 
 @register_strategy("DFS")
 class DFSStrategy(MoveStrategy):
+    def __init__(self):
+        self.committed_apple: Position | None = None
+        self.path: list[Position] = []
+
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
     ) -> Direction:
@@ -90,51 +94,59 @@ class DFSStrategy(MoveStrategy):
             return snake.direction
 
         head = snake.body[0]
-        body = set(snake.body) # for fast body lookup
-        apples = set(snapshot.apples) # for fast apple lookup
+        body = set(snake.body)
+        apples = set(snapshot.apples)
 
-        path = self._dfs(snapshot, head, apples, body)
+        # Setiap tick, ambil move yang sudah pernah di compute selama apple masih ada
+        if self.committed_apple in apples and self.path: 
+            next_path = self.path[0]
+            next_move = path_to_direction(next_path, head, legal)
+            if next_move: 
+                self.path = self.path[1:]
+                return next_move
+
+            self.path = []
+
+        path = self._dfs(snapshot, head, body, apples)
         if not path:
             return snake.direction if snake.direction in legal else legal[0]
 
-        next_move = path[1]
-        
-        return convert_next_path_to_direction(next_move, head, legal)
+        next_path = path[1]
+        self.path = path[2:]
+        self.committed_apple = path[-1]
+
+        return convert_next_path_to_legal_direction(next_path, head, legal)
+
 
     def _dfs(self, 
              snapshot: GameSnapshot, 
              start: Position, 
-             apples: set[Position], 
-             blocked: set[Position]
-             ) -> list[Position] | None:
+             blocked, apples: set[Position]) -> list[Position] | None:
 
-        stack = [(start, [start])]
-        visited = set()
+        stack = [(start, [start])] # tupple berisi posisi sekarang dan path
+        visited = set() # set dari position yang sudah di visit
 
         while stack:
             current, path = stack.pop()
+
             if current in visited:
                 continue
-            
+
             visited.add(current)
-                        
-            if current in apples:
+
+            if current in apples: # Jika posisi sekarang adalah apple berarti pencarian sudah selesai
                 return path
 
             for direction in Direction:
-                dx, dy = direction.vector # value dari vector berupa tuple 2 integer antara -1 0 1
-                head_x, head_y = current
-                next_move = (head_x + dx, head_y + dy)
+                next_move = convert_direction_to_next_move(current, direction)
+                
+                if (in_bound(snapshot, next_move) and # make sure next move masih dalam board
+                    next_move not in blocked and # next move bukan body dari ular
+                    next_move not in visited): # next move belum pernah di visit
 
-                if (
-                    in_bound(snapshot, next_move) and
-                    next_move not in blocked and
-                    next_move not in visited
-                ):
                     stack.append((next_move, path + [next_move]))
 
         return None
-
 
 @register_strategy("BFS")
 class BFSStrategy(MoveStrategy):
@@ -147,44 +159,39 @@ class BFSStrategy(MoveStrategy):
             return snake.direction
 
         head = snake.body[0]
-        body = set(snake.body) # for fast body lookup
-        apples = set(snapshot.apples) # for fast apple lookup
+        body = set(snake.body)
+        apples = set(snapshot.apples)
 
-        path = self._bfs(snapshot, head, apples, body)
+        path = self._bfs(snapshot, head, body, apples)
         if not path:
             return snake.direction if snake.direction in legal else legal[0]
 
-        next_move = path[1]
-
-        return convert_next_path_to_direction(next_move, head, legal)
+        next_path = path[1]
+        return convert_next_path_to_legal_direction(next_path, head, legal)
 
     def _bfs(self, 
              snapshot: GameSnapshot, 
              start: Position, 
-             apples: set[Position], 
-             blocked: set[Position]
-             ) -> list[Position] | None:
-        
-        queue = deque([(start, [start])])
+             blocked, apples: set[Position]) -> list[Position] | None:
+
+        queue = deque([(start, [start])]) # queue menyimpan current position dan path
         visited = {start}
 
         while queue:
             current, path = queue.popleft()
+         
             if current in apples:
                 return path
 
             for direction in Direction:
-                dx, dy = direction.vector
-                head_x, head_y = current
-                next_move = (head_x + dx, head_y + dy)
+                next_move = convert_direction_to_next_move(current, direction)
+                            
+                if (in_bound(snapshot, next_move) and # next move harus dalam board
+                    next_move not in blocked and # next move bukan ke body ular
+                    next_move not in visited): # next move belum pernah di visit
 
-                if (
-                    in_bound(snapshot, next_move) and
-                    next_move not in blocked and
-                    next_move not in visited
-                ):
-                    visited.add(next_move)
                     queue.append((next_move, path + [next_move]))
+                    visited.add(next_move)
 
         return None
 
@@ -201,52 +208,50 @@ class UCSStrategy(MoveStrategy):
             return snake.direction
 
         head = snake.body[0]
-        body = set(snake.body) # for fast body lookup
-        apples = set(snapshot.apples) # for fast apple lookup
+        body = set(snake.body)
+        apples = set(snapshot.apples)
 
-        path = self._ucs(snapshot, head, apples, body)
+        path = self._ucs(snapshot, head, body, apples)
         if not path:
             return snake.direction if snake.direction in legal else legal[0]
 
-        next_move = path[1]
+        next_path = path[1]
 
-        return convert_next_path_to_direction(next_move, head, legal)
+        return convert_next_path_to_legal_direction(next_path, head, legal)
 
     def _ucs(self, 
              snapshot: GameSnapshot, 
              start: Position, 
-             apples: set[Position], 
-             blocked: set[Position]
-             ) -> list[Position] | None:
-        
-        queue = [(0, start, [start])] # (cost, current cell, path)
+             blocked, apples: set[Position]) -> list[Position] | None:
+
+        queue = [(0, start, [start])] # queue menyimpan cost, current position, dan path
         visited = set()
 
         while queue:
             cost, current, path = heapq.heappop(queue)
+
             if current in visited:
                 continue
-            
+
             visited.add(current)
 
             if current in apples:
                 return path
 
-            head_x, head_y = current
             for direction in Direction:
-                dx, dy = direction.vector
-                next_move = (head_x + dx, head_y + dy)
-                if (
-                    in_bound(snapshot, next_move) and
-                    next_move not in blocked and
-                    next_move not in visited
-                ):
-                    free_neighbour_of_next_move = count_free_neighbours(snapshot, next_move, blocked)
+                next_move = convert_direction_to_next_move(current, direction)
+                
+                if (in_bound(snapshot, next_move) and # next move harus dalam board
+                    next_move not in blocked and # next move bukan ke body ular
+                    next_move not in visited): # next move belum pernah di visit
 
-                    penalty_of_next_move = PENALTY[free_neighbour_of_next_move]
-                    new_cost = cost + 1 + penalty_of_next_move
+                        free_neighbour_of_next_move = count_free_neighbours(snapshot, next_move, blocked)
 
-                    heapq.heappush(queue, (new_cost, next_move, path + [next_move]))
+                        # semakin sedikit valid move dari next move semakin besar penalty
+                        penalty_of_next_move = PENALTY[free_neighbour_of_next_move] 
+                        new_cost = cost + 1 + penalty_of_next_move
+
+                        heapq.heappush(queue, (new_cost, next_move, path + [next_move]))
 
         return None
 
@@ -262,51 +267,49 @@ class GreedyBFSStrategy(MoveStrategy):
             return snake.direction
 
         head = snake.body[0]
-        body = set(snake.body) # for fast body lookup
-        apples = set(snapshot.apples) # for fast apple lookup
-
-        path = self._greedy_bfs(snapshot, head, apples, body)
+        body = set(snake.body)
+        apples = set(snapshot.apples)
+        
+        path = self._greedy_bfs(snapshot, head, body, apples)
         if not path:
             return snake.direction if snake.direction in legal else legal[0]
 
-        next_move = path[1]
+        next_path = path[1]
 
-        return convert_next_path_to_direction(next_move, head, legal)
+        return convert_next_path_to_legal_direction(next_path, head, legal)
 
     def _greedy_bfs(self, 
-             snapshot: GameSnapshot, 
-             start: Position, 
-             apples: set[Position], 
-             blocked: set[Position]
-             ) -> list[Position] | None:
-        
-        queue = [(0, start, [start])] # (heuristic value, current cell, path)
+                    snapshot: GameSnapshot,
+                    start: Position,
+                    blocked, apples: list[Position]) -> list[Position] | None:
+
+        queue = [(0, start, [start])] # tupple berisi cost, current position, dan path
         visited = {start}
 
         while queue:
             _, current, path = heapq.heappop(queue)
+
             if current in apples:
                 return path
 
             for direction in Direction:
-                dx, dy = direction.vector
-                head_x, head_y = current
-                next_move = (head_x + dx, head_y + dy)
+                next_move = convert_direction_to_next_move(current, direction)
 
-                if (
-                    in_bound(snapshot, next_move) and
-                    next_move not in blocked and
-                    next_move not in visited
-                ):
+                if (in_bound(snapshot, next_move) and # next move harus dalam board
+                    next_move not in blocked and # next move bukan ke body ular
+                    next_move not in visited): # next move belum pernah di visit
+
                     min_distance = 5000
+                    # ambil distance terkecil
                     for apple in apples:
-                        distance = manhattan_distance(next_move, apple)
-                        min_distance = min(min_distance, distance)
+                        new_distance = manhattan_distance(next_move, apple)
+                        min_distance = min(min_distance, new_distance)
 
                     visited.add(next_move)
                     heapq.heappush(queue, (min_distance, next_move, path + [next_move]))
-
+        
         return None
+            
 
 @register_strategy("A*")
 class AStarStrategy(MoveStrategy):
@@ -319,54 +322,53 @@ class AStarStrategy(MoveStrategy):
             return snake.direction
 
         head = snake.body[0]
-        body = set(snake.body) # for fast body lookup
-        apples = set(snapshot.apples) # for fast apple lookup
-
-        path = self._a_star(snapshot, head, apples, body)
+        body = set(snake.body)
+        apples = set(snapshot.apples)
+        
+        path = self._a_star(snapshot, head, body, apples)
         if not path:
             return snake.direction if snake.direction in legal else legal[0]
 
-        next_move = path[1]
+        next_path = path[1]
 
-        return convert_next_path_to_direction(next_move, head, legal)
+        return convert_next_path_to_legal_direction(next_path, head, legal)
 
     def _a_star(self, 
              snapshot: GameSnapshot, 
-             start: Position, 
-             apples: set[Position], 
-             blocked: set[Position]
-             ) -> list[Position] | None:
+             start: Position,
+             blocked, apples: set[Position]) -> list[Position] | None:
         
-        queue = [(0, 0, start, [start])] # (f, g, current cell, path)
+        queue = [(0, 0, start, [start])] # queue menyimpan f, g, current position, dan path
         visited = set()
 
         while queue:
             _, cost, current, path = heapq.heappop(queue)
+
             if current in visited:
                 continue
-            
+
             visited.add(current)
 
             if current in apples:
                 return path
 
-            head_x, head_y = current
             for direction in Direction:
-                dx, dy = direction.vector
-                next_move = (head_x + dx, head_y + dy)
-                if (
-                    in_bound(snapshot, next_move) and
-                    next_move not in blocked and
-                    next_move not in visited
-                ):
+                next_move = convert_direction_to_next_move(current, direction)
+
+                if (in_bound(snapshot, next_move) and # next move harus dalam board
+                    next_move not in blocked and # next move bukan ke body ular
+                    next_move not in visited): # next move belum pernah di visit
+
                     h = 5000
+                    # ambil distance terkecil
                     for apple in apples:
-                        distance = manhattan_distance(next_move, apple)
-                        h = min(h, distance)
+                        new_distance = manhattan_distance(next_move, apple)
+                        h = min(h, new_distance)
 
                     free_neighbour_of_next_move = count_free_neighbours(snapshot, next_move, blocked)
-
-                    penalty_of_next_move = PENALTY[free_neighbour_of_next_move]
+                    
+                    # semakin sedikit valid move dari next move semakin besar penalty
+                    penalty_of_next_move = PENALTY[free_neighbour_of_next_move] 
                     g = cost + 1 + penalty_of_next_move
 
                     f = g + h
@@ -380,7 +382,14 @@ def in_bound(snapshot: GameSnapshot, pos: Position) -> bool:
     x, y = pos
     return 0 <= x < snapshot.columns and 0 <= y < snapshot.rows
 
-def convert_next_path_to_direction(next_move, head: Position, legal_move: tuple[Direction, ...]) -> Direction:
+def convert_next_path_to_legal_direction(next_move, head: Position, legal_move: tuple[Direction, ...]) -> Direction:
+    direction = path_to_direction(next_move, head, legal_move)
+    if not direction:
+        return legal_move[0]
+    
+    return direction
+
+def path_to_direction(next_move, head: Position, legal_move: tuple[Direction, ...]) -> Direction | None:
     # next_move dan head berupa (column, row)
     # untuk bisa di convert jadi direction perlu dicari selisih column dan row
     direction_x = next_move[0] - head[0]
@@ -389,16 +398,21 @@ def convert_next_path_to_direction(next_move, head: Position, legal_move: tuple[
     for direction in legal_move:
         if direction.vector == (direction_x, direction_y):
             return direction
+    
+    return None
+    
 
-    # fallback ketika next move ilegal
-    return legal_move[0]
+def convert_direction_to_next_move(head: Position, direction: Direction) -> Position:
+    # direction berupa UP, DOWN, LEFT, RIGHT
+    dx, dy = direction.vector
+    head_x, head_y = head
+
+    return (head_x + dx, head_y + dy)
 
 def count_free_neighbours(snapshot: GameSnapshot, pos: Position, blocked: set[Position]) -> int:
-    x, y = pos
     count = 0
     for direction in Direction:
-        direction_x, direction_y = direction.vector
-        neighbour = (x + direction_x, y + direction_y)
+        neighbour = convert_direction_to_next_move(pos, direction)
         if in_bound(snapshot, neighbour) and neighbour not in blocked:
             count += 1
 
