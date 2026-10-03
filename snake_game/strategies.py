@@ -406,7 +406,7 @@ class MinimaxStrategy(MoveStrategy):
         values = []
         for move in legal:
             child_node = apply_move(root, current_player_id, move)
-            value = self.minimax(child_node, MAX_DEPTH - 1, opponent_id, current_player_id, opponent_id)
+            value = self._minimax(child_node, MAX_DEPTH - 1, opponent_id, current_player_id, opponent_id)
             values.append(value)
 
         best_value = max(values)
@@ -414,7 +414,7 @@ class MinimaxStrategy(MoveStrategy):
 
         return rng.choice(best_moves)
         
-    def minimax(self, 
+    def _minimax(self, 
                 state: MinimaxState, 
                 depth: int, 
                 current_turn: str, # id snake mana yang lagi jalan
@@ -445,14 +445,98 @@ class MinimaxStrategy(MoveStrategy):
         values = []
         for move in moves:
             child_node = apply_move(state, current_turn, move)
-            node_value = self.minimax(child_node, depth-1, next_turn, current_player, opponent)
+            node_value = self._minimax(child_node, depth-1, next_turn, current_player, opponent)
             values.append(node_value)
 
         if current_turn == current_player:
             return max(values)
 
         return min(values)
-     
+
+@register_strategy("Alpha beta pruning")
+class ABPruningStrategy(MoveStrategy):
+    def choose_move(
+        self, snapshot: GameSnapshot, snake_id: str, rng: Random
+    ) -> Direction:
+        legal = snapshot.legal_moves_for(snake_id)
+        our_snake = snapshot.snake(snake_id)
+        if not legal or not snapshot.apples:
+            return our_snake.direction
+
+        # Asumsi hanya ada 1 lawan dalam game
+        other = [snake for snake in snapshot.snakes if snake.snake_id != snake_id]
+        opponent = other[0] if len(other) > 0 else None
+
+        if opponent is None: # jika tidak ada lawan, fallback ke random move
+            return rng.choice(legal)
+
+        current_player_id = our_snake.snake_id
+        opponent_id = opponent.snake_id
+
+        root = build_minimax_state(snapshot)
+
+        best = -float('inf')
+        values = []
+        for move in legal:
+            child_node = apply_move(root, current_player_id, move)
+            value = self._alpha_beta(child_node, MAX_DEPTH - 1, opponent_id, current_player_id, opponent_id, best - 1, float('inf'))
+            values.append(value)
+            best = max(best, value)
+
+        best_value = max(values)
+        best_moves = [move for move, value in zip(legal, values) if value == best_value]
+
+        return rng.choice(best_moves)
+        
+    def _alpha_beta(self, 
+                state: MinimaxState, 
+                depth: int, 
+                current_turn: str, # id snake mana yang lagi jalan
+                current_player, opponent: str,
+                alpha: int, beta: int
+                ) -> int:  # id snake
+
+        result = terminal_value(state, current_player)
+        if result is not None:
+            # game selesai
+            return result
+
+        moves = legal_moves(state, current_turn)
+        if len(moves) == 0:
+            if current_turn == current_player:
+                # tidak ada move yang bisa di ambil current player
+                return -WIN_SCORE
+            else:
+                # tidak ada move yang bisa di ambil lawan
+                return +WIN_SCORE
+            
+        if depth == 0:
+            return evaluate(state, current_player)
+
+        if current_turn == current_player:
+            next_turn = opponent
+            best = -float('inf')
+            for move in moves:
+                child_node = apply_move(state, current_turn, move)
+                value = self._alpha_beta(child_node, depth - 1, next_turn, current_player, opponent, alpha, beta)
+                best = max(best, value)
+                alpha = max(alpha, best)
+                if alpha >= beta:
+                    break
+
+            return best
+        else:
+            next_turn = current_player
+            best = float('inf')
+            for move in moves:
+                child_node = apply_move(state, current_turn, move)
+                value = self._alpha_beta(child_node, depth - 1, next_turn, current_player, opponent, alpha, beta)
+                best = min(best, value)
+                beta = min(beta, best)
+                if alpha >= beta:
+                    break
+
+            return best
     
 def in_bound(snapshot: GameSnapshot | MinimaxState, pos: Position) -> bool:
     # Cek apakah position masih valid berada di dalam board
