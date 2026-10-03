@@ -106,3 +106,12 @@ class MoveOutcome:
     ate_apple: bool = False
     collision: str | None = None
     message: str = ""
+
+
+@dataclass(frozen=True)
+class MinimaxState:
+    snakes: dict[str, SnakeView]
+    apples: tuple[Position, ...]
+    rounds_remaining: int
+    rows: int
+    columns: int

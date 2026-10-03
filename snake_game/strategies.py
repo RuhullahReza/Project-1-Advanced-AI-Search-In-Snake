@@ -3,12 +3,12 @@ from __future__ import annotations
 from collections import deque
 import heapq
 
-
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from random import Random
 
-from .models import Direction, GameSnapshot, Position
+from .models import Direction, GameSnapshot, Position, MinimaxState, SnakeView
+from .engine import AI_ID
 
 
 class MoveStrategy(ABC):
@@ -376,8 +376,85 @@ class AStarStrategy(MoveStrategy):
                     heapq.heappush(queue, (f, g, next_move, path + [next_move]))
 
         return None
+
+
+MAX_DEPTH = 8
+WIN_SCORE = 10000
+
+@register_strategy("Minimax")
+class MinimaxStrategy(MoveStrategy):
+    def choose_move(
+        self, snapshot: GameSnapshot, snake_id: str, rng: Random
+    ) -> Direction:
+        legal = snapshot.legal_moves_for(snake_id)
+        our_snake = snapshot.snake(snake_id)
+        if not legal or not snapshot.apples:
+            return our_snake.direction
+
+        # Asumsi hanya ada 1 lawan dalam game
+        other = [snake for snake in snapshot.snakes if snake.snake_id != snake_id]
+        opponent = other[0] if len(other) > 0 else None
+
+        if opponent is None: # jika tidak ada lawan, fallback ke random move
+            return rng.choice(legal)
+
+        current_player_id = our_snake.snake_id
+        opponent_id = opponent.snake_id
+
+        root = build_minimax_state(snapshot)
+
+        values = []
+        for move in legal:
+            child_node = apply_move(root, current_player_id, move)
+            value = self.minimax(child_node, MAX_DEPTH - 1, opponent_id, current_player_id, opponent_id)
+            values.append(value)
+
+        best_value = max(values)
+        best_moves = [move for move, value in zip(legal, values) if value == best_value]
+
+        return rng.choice(best_moves)
+        
+    def minimax(self, 
+                state: MinimaxState, 
+                depth: int, 
+                current_turn: str, # id snake mana yang lagi jalan
+                current_player, opponent: str) -> int:  # id snake
+
+        result = terminal_value(state, current_player)
+        if result is not None:
+            # game selesai return hasil
+            return result
+
+        moves = legal_moves(state, current_turn)
+        if len(moves) == 0:
+            if current_turn == current_player:
+                # tidak ada move yang bisa di ambil current player
+                return -WIN_SCORE
+            else:
+                # tidak ada move yang bisa di ambil lawan
+                return +WIN_SCORE
+
+        if depth == 0:
+            return evaluate(state, current_player)
+
+        if current_turn == current_player:
+            next_turn = opponent
+        else:
+            next_turn = current_player
+
+        values = []
+        for move in moves:
+            child_node = apply_move(state, current_turn, move)
+            node_value = self.minimax(child_node, depth-1, next_turn, current_player, opponent)
+            values.append(node_value)
+
+        if current_turn == current_player:
+            return max(values)
+
+        return min(values)
+     
     
-def in_bound(snapshot: GameSnapshot, pos: Position) -> bool:
+def in_bound(snapshot: GameSnapshot | MinimaxState, pos: Position) -> bool:
     # Cek apakah position masih valid berada di dalam board
     x, y = pos
     return 0 <= x < snapshot.columns and 0 <= y < snapshot.rows
@@ -401,7 +478,6 @@ def path_to_direction(next_move, head: Position, legal_move: tuple[Direction, ..
     
     return None
     
-
 def convert_direction_to_next_move(head: Position, direction: Direction) -> Position:
     # direction berupa UP, DOWN, LEFT, RIGHT
     dx, dy = direction.vector
@@ -420,3 +496,117 @@ def count_free_neighbours(snapshot: GameSnapshot, pos: Position, blocked: set[Po
 
 def manhattan_distance(pos: Position, target: Position) -> int:
     return abs(target[0] - pos[0]) + abs(target[1] - pos[1])
+
+def build_minimax_state(snapshot: GameSnapshot) -> MinimaxState:
+    snakes: dict[str, SnakeView] = {}
+    for snake in snapshot.snakes:
+        snakes[snake.snake_id] = snake
+
+    return MinimaxState(snakes, snapshot.apples, snapshot.rounds_remaining, snapshot.rows, snapshot.columns)
+
+def legal_moves(state: MinimaxState, snake_id: str) -> list[Direction]:
+    snake = state.snakes[snake_id]
+    head = snake.body[0]
+    legal: list[Direction] = []
+
+    for direction in Direction:
+        # tidak bisa mundur
+        if len(snake.body) > 1 and direction is snake.direction.opposite:
+            continue
+
+        # snake bergerak ke posisi baru
+        new_head = convert_direction_to_next_move(head, direction)
+
+        # tidak boleh keluar board
+        if not in_bound(state, new_head):
+            continue
+
+        # tidak boleh bergerak ke body sendiri:
+        growing = new_head in state.apples
+        if growing: # ketika head ada di apple body bertambah panjang 1 cell
+            own_blocked = snake.body
+        else: # ketika bergerak maju ekor nya berpindah 1 cell
+            own_blocked = snake.body[:-1]
+
+        if new_head in own_blocked:
+            continue
+
+        # tidak boleh nabrak ular lain
+        hit_other = False
+        for other_id, other_snake in state.snakes.items():
+            if other_id != snake_id and new_head in other_snake.body:
+                hit_other = True
+
+        if hit_other:
+            continue
+
+        legal.append(direction)
+
+    return legal
+
+def apply_move(state: MinimaxState, snake_id: str, direction: Direction) -> MinimaxState:
+    snake = state.snakes[snake_id]
+    new_head = convert_direction_to_next_move(snake.body[0], direction)
+
+    growing = new_head in state.apples
+    if growing:
+        # ketika head ada di apple body bertambah panjang 1 cell
+        new_body = (new_head,) + snake.body
+
+        # apples berkurang
+        new_apples = tuple(apple for apple in state.apples if apple != new_head)
+
+    else:
+        # ketika bergerak maju ekor nya berpindah 1 cell
+        new_body = (new_head,) + snake.body[:-1]
+
+        new_apples = state.apples
+
+    new_score = snake.score + 1 if growing else snake.score
+    new_snake = SnakeView(snake_id, new_body, direction, new_score)
+
+    new_snakes = state.snakes.copy()
+    new_snakes[snake_id] = new_snake # replace state snake ke state terbaru
+
+    new_rounds = state.rounds_remaining
+    if snake_id == AI_ID:
+        # round berkurang setelah human dan AI selesai bergerak
+        new_rounds = new_rounds - 1
+
+    return MinimaxState(new_snakes, new_apples, new_rounds, state.rows, state.columns)
+
+def terminal_value(state: MinimaxState, snake_id: str) -> int | None:
+    current_player, opponent = get_current_and_opponent_snake(state, snake_id)
+
+    if len(state.apples) == 0 or state.rounds_remaining <= 0:
+        if current_player.score > opponent.score:
+            return WIN_SCORE
+        if current_player.score < opponent.score:
+            return -WIN_SCORE
+        return 0
+
+    return None
+
+def evaluate(state: MinimaxState, snake_id: str) -> int:
+    current_player, opponent = get_current_and_opponent_snake(state, snake_id)
+
+    score = 100 * (current_player.score - opponent.score)
+
+    current_apple_distance = 5000
+    opponent_apple_distance = 5000
+
+    for apple in state.apples:
+        current_distance = manhattan_distance(current_player.body[0], apple)
+        opponent_distance = manhattan_distance(opponent.body[0], apple)
+
+        current_apple_distance = min(current_apple_distance, current_distance)
+        opponent_apple_distance = min(opponent_apple_distance, opponent_distance)
+
+    return score + (opponent_apple_distance - current_apple_distance)
+
+def get_current_and_opponent_snake(state: MinimaxState, snake_id: str) -> list[SnakeView]:
+    other = [snake for snake in state.snakes.values() if snake.snake_id != snake_id]
+    current_player = state.snakes[snake_id]
+    opponent = other[0]
+
+    return current_player, opponent
