@@ -6,11 +6,22 @@ import heapq
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from random import Random
+from tracemalloc import start
 
 from .models import Direction, GameSnapshot, Position, MinimaxState, SnakeView
 from .engine import AI_ID
 
+class SearchMetrics:
+    def __init__(self):
+        self.reset()
 
+    def reset(self):
+        self.states_generated = 0
+        self.states_expanded = 0
+
+    def print_metrics(self):
+        print("States generated:", self.states_generated)
+        print("States expanded:", self.states_expanded)
 class MoveStrategy(ABC):
     """Base class for every automated snake movement method."""
 
@@ -84,6 +95,7 @@ class DFSStrategy(MoveStrategy):
     def __init__(self):
         self.committed_apple: Position | None = None
         self.path: list[Position] = []
+        self.metrics = SearchMetrics()
 
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
@@ -115,6 +127,10 @@ class DFSStrategy(MoveStrategy):
         self.path = path[2:]
         self.committed_apple = path[-1]
 
+        # helper statistik
+        self.metrics.print_metrics()
+
+
         return convert_next_path_to_legal_direction(next_path, head, legal)
 
 
@@ -132,6 +148,9 @@ class DFSStrategy(MoveStrategy):
             if current in visited:
                 continue
 
+            # helper statistik
+            self.metrics.states_expanded += 1
+
             visited.add(current)
 
             if current in apples: # Jika posisi sekarang adalah apple berarti pencarian sudah selesai
@@ -145,6 +164,9 @@ class DFSStrategy(MoveStrategy):
                     next_move not in visited): # next move belum pernah di visit
 
                     stack.append((next_move, path + [next_move]))
+
+                    #helper statistik
+                    self.metrics.states_generated += 1
 
         return None
 
@@ -313,6 +335,10 @@ class GreedyBFSStrategy(MoveStrategy):
 
 @register_strategy("A*")
 class AStarStrategy(MoveStrategy):
+    def __init__(self):
+        super().__init__()
+        self.metrics = SearchMetrics()
+
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
     ) -> Direction:
@@ -330,6 +356,11 @@ class AStarStrategy(MoveStrategy):
             return snake.direction if snake.direction in legal else legal[0]
 
         next_path = path[1]
+        print(f"Pop: {next_path}")
+
+        # helper statistik
+        self.metrics.print_metrics()
+
 
         return convert_next_path_to_legal_direction(next_path, head, legal)
 
@@ -338,19 +369,32 @@ class AStarStrategy(MoveStrategy):
              start: Position,
              blocked, apples: set[Position]) -> list[Position] | None:
         
-        queue = [(0, 0, start, [start])] # queue menyimpan f, g, current position, dan path
+        h_start = min(
+            manhattan_distance(start, apple)
+            for apple in apples
+        )
+
+        queue = [(h_start, 0, start, [start])]
         visited = set()
+        g_score = {}
 
         while queue:
-            _, cost, current, path = heapq.heappop(queue)
-
+            f, cost, current, path = heapq.heappop(queue)
+            print(f"Current: {current}, f: {f}, g: {cost}, Path: {path}")
+            print(f"g_score: {g_score}")
+            
             if current in visited:
                 continue
 
             visited.add(current)
+            print(f"Visited: {visited}")
 
             if current in apples:
+                print(f"Found apple at {current}, path: {path}")
                 return path
+
+            # helper statistik
+            self.metrics.states_expanded += 1
 
             for direction in Direction:
                 next_move = convert_direction_to_next_move(current, direction)
@@ -358,6 +402,9 @@ class AStarStrategy(MoveStrategy):
                 if (in_bound(snapshot, next_move) and # next move harus dalam board
                     next_move not in blocked and # next move bukan ke body ular
                     next_move not in visited): # next move belum pernah di visit
+
+                    # helper statistik
+                    self.metrics.states_generated += 1
 
                     h = 5000
                     # ambil distance terkecil
@@ -371,13 +418,169 @@ class AStarStrategy(MoveStrategy):
                     penalty_of_next_move = PENALTY[free_neighbour_of_next_move] 
                     g = cost + 1 + penalty_of_next_move
 
-                    f = g + h
-
-                    heapq.heappush(queue, (f, g, next_move, path + [next_move]))
+                    if(next_move in g_score and g >= g_score[next_move]):
+                        continue
+                    else:
+                        g_score[next_move] = g
+                        f = g + h
+                        heapq.heappush(queue, (f, g, next_move, path + [next_move]))
 
         return None
+@register_strategy("IDA*")
+class IDAStarStrategy(MoveStrategy):
+
+    def __init__(self):
+        super().__init__()
+        self.metrics = SearchMetrics()
+
+    def choose_move(
+        self, snapshot: GameSnapshot, snake_id: str, rng: Random
+    ) -> Direction:
+
+        # helper statistik
+        # self.metrics.reset()
+
+        legal = snapshot.legal_moves_for(snake_id)
+        snake = snapshot.snake(snake_id)
+
+        if not legal or not snapshot.apples:
+            return snake.direction
+
+        head = snake.body[0]
+        body = set(snake.body)
+        apples = set(snapshot.apples)
+
+        path = self._ida_star(snapshot, head, body, apples)
+
+        if not path or len(path) < 2:
+            if snake.direction in legal:
+                return snake.direction
+            else:
+                return legal[0]
+
+        next_path = path[1]
+
+        # helper statistik
+        self.metrics.print_metrics()
+        print(f"IDA* next position: {next_path}")
+
+        return convert_next_path_to_legal_direction(
+            next_path, head, legal
+        )
+
+    def _ida_star(
+        self,
+        snapshot: GameSnapshot,
+        start: Position,
+        blocked: set[Position],
+        apples: set[Position],
+    ) -> list[Position] | None:
+
+        # treshold awal pakai manhattan
+        threshold = min(
+            manhattan_distance(start, apple)
+            for apple in apples
+        )
+
+        while True:
+
+            path = [start]
+            path_set = {start}
+
+            result, next_threshold = self._dfs(
+                snapshot,
+                start,
+                blocked,
+                apples,
+                0,
+                path,
+                path_set,
+                threshold,
+            )
+
+            if result is not None:
+                return result
+
+            if next_threshold is None:
+                return None
+
+            threshold = next_threshold
+
+    def _dfs(
+        self,
+        snapshot: GameSnapshot,
+        current: Position,
+        blocked: set[Position],
+        apples: set[Position],
+        g: int,
+        path: list[Position],
+        path_set: set[Position],
+        threshold: int,
+    ) -> tuple[list[Position] | None, int | None]:
+
+        h = min(
+            manhattan_distance(current, apple)
+            for apple in apples
+        )
+
+        f = g + h
+        if f > threshold:
+            return None, f
+
+        if current in apples:
+            return path.copy(), None
+
+        # helper statistik
+        self.metrics.states_expanded += 1
+
+        smallest_threshold = None
+
+        for direction in Direction:
+
+            next_move = convert_direction_to_next_move(
+                current, direction
+            )
+
+            if (
+                not in_bound(snapshot, next_move)
+                or next_move in blocked
+                or next_move in path_set
+            ):
+                continue
+
+            # helper statistik
+            self.metrics.states_generated += 1
+
+            new_g = g + 1
+
+            path.append(next_move)
+            path_set.add(next_move)
+
+            result, next_threshold = self._dfs(
+                snapshot,
+                next_move,
+                blocked,
+                apples,
+                new_g,
+                path,
+                path_set,
+                threshold,
+            )
+
+            path.pop()
+            path_set.remove(next_move)
+
+            if result is not None:
+                return result, None
+
+            if next_threshold is not None:
+                if smallest_threshold is None or next_threshold < smallest_threshold:
+                    smallest_threshold = next_threshold
+
+        return None, smallest_threshold
 
 
+    
 MAX_DEPTH = 8
 WIN_SCORE = 10000
 
