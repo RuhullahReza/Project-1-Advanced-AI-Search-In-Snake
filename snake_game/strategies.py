@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from random import Random
 from tracemalloc import start
+from itertools import count
 
 from .models import Direction, GameSnapshot, Position, MinimaxState, SnakeView
 from .engine import AI_ID
@@ -226,111 +227,152 @@ class UCSStrategy(MoveStrategy):
     ) -> Direction:
         legal = snapshot.legal_moves_for(snake_id)
         snake = snapshot.snake(snake_id)
+        
         if not legal or not snapshot.apples:
             return snake.direction
-
-        head = snake.body[0]
-        body = set(snake.body)
+        
         apples = set(snapshot.apples)
+        start_state = (snake.body[0], snake.direction)
+        frontier = []
+        counter = count()
+        blocked = set(snake.body)
+        best_cost = {start_state: 0} # {((koordinat kepala ular), direction): cost}
+        # contoh: {(4, 5), direction.UP: 0}
 
-        path = self._ucs(snapshot, head, body, apples)
-        if not path:
-            return snake.direction if snake.direction in legal else legal[0]
+        heapq.heappush(frontier,
+                       (
+                           0,
+                           next(counter),
+                           start_state,
+                           None
+                        ),
+                       )
 
-        next_path = path[1]
+        while frontier:
+            current_cost, _, current_state, first_move = heapq.heappop(frontier)
 
-        return convert_next_path_to_legal_direction(next_path, head, legal)
-
-    def _ucs(self, 
-             snapshot: GameSnapshot, 
-             start: Position, 
-             blocked, apples: set[Position]) -> list[Position] | None:
-
-        queue = [(0, start, [start])] # queue menyimpan cost, current position, dan path
-        visited = set()
-
-        while queue:
-            cost, current, path = heapq.heappop(queue)
-
-            if current in visited:
+            if current_cost > best_cost[current_state]:
                 continue
 
-            visited.add(current)
+            head, _ = current_state
 
-            if current in apples:
-                return path
+            if head in apples:
+                return first_move
 
             for direction in Direction:
-                next_move = convert_direction_to_next_move(current, direction)
-                
-                if (in_bound(snapshot, next_move) and # next move harus dalam board
-                    next_move not in blocked and # next move bukan ke body ular
-                    next_move not in visited): # next move belum pernah di visit
 
-                        free_neighbour_of_next_move = count_free_neighbours(snapshot, next_move, blocked)
+                dx, dy = direction.vector
+                head_x, head_y = head
+                next_move = (head_x + dx, head_y + dy)
 
-                        # semakin sedikit valid move dari next move semakin besar penalty
-                        penalty_of_next_move = PENALTY[free_neighbour_of_next_move] 
-                        new_cost = cost + 1 + penalty_of_next_move
+                next_state = (next_move, direction)
 
-                        heapq.heappush(queue, (new_cost, next_move, path + [next_move]))
+                free_neighbour_of_next_move = count_free_neighbours(snapshot, next_move, blocked)
+                penalty_of_next_move = PENALTY[free_neighbour_of_next_move]
+                new_cost = current_cost + 1 + penalty_of_next_move
 
-        return None
+                if not in_bound(snapshot, next_move) or next_move in blocked:
+                    continue
 
+                if next_state not in best_cost or new_cost < best_cost[next_state]:
+                    best_cost[next_state] = new_cost
 
-@register_strategy("Greedy Best-First Search")
+                    if first_move is None:
+                        new_first_move = direction
+                    else:
+                        new_first_move = first_move
+
+                    # new_first_move = direction if first_move is None else first_move
+
+                    heapq.heappush(frontier,
+                       (
+                           new_cost,
+                           next(counter),
+                           next_state,
+                           new_first_move
+                        ),
+                       )
+
+        # return rng.choice(legal) # bisa coba pake fallback
+        return snake.direction if snake.direction in legal else legal[0] #fallback
+
+@register_strategy("GreedyBFS")
 class GreedyBFSStrategy(MoveStrategy):
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
     ) -> Direction:
         legal = snapshot.legal_moves_for(snake_id)
         snake = snapshot.snake(snake_id)
+        
         if not legal or not snapshot.apples:
             return snake.direction
-
-        head = snake.body[0]
-        body = set(snake.body)
-        apples = set(snapshot.apples)
         
-        path = self._greedy_bfs(snapshot, head, body, apples)
-        if not path:
-            return snake.direction if snake.direction in legal else legal[0]
+        apples = set(snapshot.apples)
+        start_state = (snake.body[0], snake.direction)
+        frontier = []
+        counter = count()
+        blocked = set(snake.body)
+        visited = {start_state} # {((koordinat kepala ular), direction)}
+        # contoh: {((4, 5), direction.UP)}
 
-        next_path = path[1]
+        distance_start = 999
+        for apple in apples:
+            if manhattan_distance(snake.body[0], apple) < distance_start:
+                distance_start = manhattan_distance(snake.body[0], apple)
 
-        return convert_next_path_to_legal_direction(next_path, head, legal)
+        heapq.heappush(frontier,
+                       (
+                           distance_start,
+                           next(counter),
+                           start_state,
+                           None
+                        ),
+                       )
 
-    def _greedy_bfs(self, 
-                    snapshot: GameSnapshot,
-                    start: Position,
-                    blocked, apples: list[Position]) -> list[Position] | None:
+        while frontier:
+            _, _, current_state, first_move = heapq.heappop(frontier)
+            head, _ = current_state
 
-        queue = [(0, start, [start])] # tupple berisi cost, current position, dan path
-        visited = {start}
-
-        while queue:
-            _, current, path = heapq.heappop(queue)
-
-            if current in apples:
-                return path
+            if head in apples:
+                return first_move
 
             for direction in Direction:
-                next_move = convert_direction_to_next_move(current, direction)
+                dx, dy = direction.vector
+                head_x, head_y = head
+                next_move = (head_x + dx, head_y + dy)
+                next_state = (next_move, direction)
 
-                if (in_bound(snapshot, next_move) and # next move harus dalam board
-                    next_move not in blocked and # next move bukan ke body ular
-                    next_move not in visited): # next move belum pernah di visit
+                distance = 999
+                for apple in apples:
+                    if manhattan_distance(next_move, apple) < distance:
+                        distance = manhattan_distance(next_move, apple)
 
-                    min_distance = 5000
-                    # ambil distance terkecil
-                    for apple in apples:
-                        new_distance = manhattan_distance(next_move, apple)
-                        min_distance = min(min_distance, new_distance)
+                if not in_bound(snapshot, next_move) or next_move in blocked:
+                    continue
 
-                    visited.add(next_move)
-                    heapq.heappush(queue, (min_distance, next_move, path + [next_move]))
-        
-        return None
+                if next_state in visited:
+                    continue
+
+                visited.add(next_state)
+                
+                if first_move is None:
+                    new_first_move = direction
+                else:
+                    new_first_move = first_move
+
+                # new_first_move = direction if first_move is None else first_move
+
+                heapq.heappush(frontier,
+                    (
+                        distance,
+                        next(counter),
+                        next_state,
+                        new_first_move
+                    ),
+                    )
+
+        # return rng.choice(legal) # bisa coba pake fallback
+        return snake.direction if snake.direction in legal else legal[0] #fallback
             
 
 @register_strategy("A*")
