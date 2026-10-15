@@ -12,17 +12,6 @@ from itertools import count
 from .models import Direction, GameSnapshot, Position, MinimaxState, SnakeView
 from .engine import AI_ID
 
-class SearchMetrics:
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.states_generated = 0
-        self.states_expanded = 0
-
-    def print_metrics(self):
-        print("States generated:", self.states_generated)
-        print("States expanded:", self.states_expanded)
 class MoveStrategy(ABC):
     """Base class for every automated snake movement method."""
 
@@ -96,7 +85,6 @@ class DFSStrategy(MoveStrategy):
     def __init__(self):
         self.committed_apple: Position | None = None
         self.path: list[Position] = []
-        self.metrics = SearchMetrics()
 
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
@@ -128,10 +116,6 @@ class DFSStrategy(MoveStrategy):
         self.path = path[2:]
         self.committed_apple = path[-1]
 
-        # helper statistik
-        self.metrics.print_metrics()
-
-
         return convert_next_path_to_legal_direction(next_path, head, legal)
 
 
@@ -149,9 +133,6 @@ class DFSStrategy(MoveStrategy):
             if current in visited:
                 continue
 
-            # helper statistik
-            self.metrics.states_expanded += 1
-
             visited.add(current)
 
             if current in apples: # Jika posisi sekarang adalah apple berarti pencarian sudah selesai
@@ -165,9 +146,6 @@ class DFSStrategy(MoveStrategy):
                     next_move not in visited): # next move belum pernah di visit
 
                     stack.append((next_move, path + [next_move]))
-
-                    #helper statistik
-                    self.metrics.states_generated += 1
 
         return None
 
@@ -377,10 +355,6 @@ class GreedyBFSStrategy(MoveStrategy):
 
 @register_strategy("A*")
 class AStarStrategy(MoveStrategy):
-    def __init__(self):
-        super().__init__()
-        self.metrics = SearchMetrics()
-
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
     ) -> Direction:
@@ -398,11 +372,6 @@ class AStarStrategy(MoveStrategy):
             return snake.direction if snake.direction in legal else legal[0]
 
         next_path = path[1]
-        print(f"Pop: {next_path}")
-
-        # helper statistik
-        self.metrics.print_metrics()
-
 
         return convert_next_path_to_legal_direction(next_path, head, legal)
 
@@ -422,21 +391,14 @@ class AStarStrategy(MoveStrategy):
 
         while queue:
             f, cost, current, path = heapq.heappop(queue)
-            print(f"Current: {current}, f: {f}, g: {cost}, Path: {path}")
-            print(f"g_score: {g_score}")
             
             if current in visited:
                 continue
 
             visited.add(current)
-            print(f"Visited: {visited}")
 
             if current in apples:
-                print(f"Found apple at {current}, path: {path}")
                 return path
-
-            # helper statistik
-            self.metrics.states_expanded += 1
 
             for direction in Direction:
                 next_move = convert_direction_to_next_move(current, direction)
@@ -444,9 +406,6 @@ class AStarStrategy(MoveStrategy):
                 if (in_bound(snapshot, next_move) and # next move harus dalam board
                     next_move not in blocked and # next move bukan ke body ular
                     next_move not in visited): # next move belum pernah di visit
-
-                    # helper statistik
-                    self.metrics.states_generated += 1
 
                     h = 5000
                     # ambil distance terkecil
@@ -468,20 +427,12 @@ class AStarStrategy(MoveStrategy):
                         heapq.heappush(queue, (f, g, next_move, path + [next_move]))
 
         return None
+    
 @register_strategy("IDA*")
 class IDAStarStrategy(MoveStrategy):
-
-    def __init__(self):
-        super().__init__()
-        self.metrics = SearchMetrics()
-
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
     ) -> Direction:
-
-        # helper statistik
-        # self.metrics.reset()
-
         legal = snapshot.legal_moves_for(snake_id)
         snake = snapshot.snake(snake_id)
 
@@ -501,10 +452,6 @@ class IDAStarStrategy(MoveStrategy):
                 return legal[0]
 
         next_path = path[1]
-
-        # helper statistik
-        self.metrics.print_metrics()
-        print(f"IDA* next position: {next_path}")
 
         return convert_next_path_to_legal_direction(
             next_path, head, legal
@@ -572,8 +519,6 @@ class IDAStarStrategy(MoveStrategy):
         if current in apples:
             return path.copy(), None
 
-        # helper statistik
-        self.metrics.states_expanded += 1
 
         smallest_threshold = None
 
@@ -589,9 +534,6 @@ class IDAStarStrategy(MoveStrategy):
                 or next_move in path_set
             ):
                 continue
-
-            # helper statistik
-            self.metrics.states_generated += 1
 
             new_g = g + 1
 
