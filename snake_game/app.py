@@ -149,7 +149,7 @@ class SnakeApp:
             self.setup_error = f"Cannot start strategy: {type(exc).__name__}: {exc}"
             return
         self.close_worker()
-        self.engine = GameEngine(self.config, rng=random.Random())
+        self.engine = GameEngine(self.config, rng=random.Random(42))
         self.strategy = strategy
         self.secondary_strategy = secondary_strategy
         self.last_ai_move_ms = pygame.time.get_ticks()

@@ -8,6 +8,7 @@ from collections.abc import Callable
 from random import Random
 from tracemalloc import start
 from itertools import count
+import time
 
 from .models import Direction, GameSnapshot, Position, MinimaxState, SnakeView
 from .engine import AI_ID
@@ -19,10 +20,17 @@ class SearchMetrics:
     def reset(self):
         self.states_generated = 0
         self.states_expanded = 0
+        self.count = count()
+        self.execution_time = 0.0
+        self.cost = 0
 
     def print_metrics(self):
+        print("Choose Move ke-", next(self.count))
+        print("Cost this move:", self.cost)
         print("States generated:", self.states_generated)
         print("States expanded:", self.states_expanded)
+        print("Execution time:", self.execution_time*1000, "ms")
+
 class MoveStrategy(ABC):
     """Base class for every automated snake movement method."""
 
@@ -115,6 +123,7 @@ class DFSStrategy(MoveStrategy):
             next_path = self.path[0]
             next_move = path_to_direction(next_path, head, legal)
             if next_move: 
+                self.metrics.print_metrics()
                 self.path = self.path[1:]
                 return next_move
 
@@ -122,6 +131,7 @@ class DFSStrategy(MoveStrategy):
 
         path = self._dfs(snapshot, head, body, apples)
         if not path:
+            self.metrics.print_metrics()
             return snake.direction if snake.direction in legal else legal[0]
 
         next_path = path[1]
@@ -130,8 +140,6 @@ class DFSStrategy(MoveStrategy):
 
         # helper statistik
         self.metrics.print_metrics()
-
-
         return convert_next_path_to_legal_direction(next_path, head, legal)
 
 
@@ -173,9 +181,14 @@ class DFSStrategy(MoveStrategy):
 
 @register_strategy("BFS")
 class BFSStrategy(MoveStrategy):
+    def __init__(self):
+        super().__init__()
+        self.metrics = SearchMetrics()
+
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
     ) -> Direction:
+        start_time = time.perf_counter()
         legal = snapshot.legal_moves_for(snake_id)
         snake = snapshot.snake(snake_id)
         if not legal or not snapshot.apples:
@@ -187,9 +200,13 @@ class BFSStrategy(MoveStrategy):
 
         path = self._bfs(snapshot, head, body, apples)
         if not path:
+            self.metrics.execution_time += time.perf_counter() - start_time
+            self.metrics.print_metrics()
             return snake.direction if snake.direction in legal else legal[0]
 
         next_path = path[1]
+        self.metrics.execution_time += time.perf_counter() - start_time
+        self.metrics.print_metrics()
         return convert_next_path_to_legal_direction(next_path, head, legal)
 
     def _bfs(self, 
@@ -206,6 +223,7 @@ class BFSStrategy(MoveStrategy):
             if current in apples:
                 return path
 
+            self.metrics.states_expanded += 1
             for direction in Direction:
                 next_move = convert_direction_to_next_move(current, direction)
                             
@@ -215,6 +233,7 @@ class BFSStrategy(MoveStrategy):
 
                     queue.append((next_move, path + [next_move]))
                     visited.add(next_move)
+                    self.metrics.states_generated += 1
 
         return None
 
@@ -222,11 +241,16 @@ PENALTY = {4: 0, 3: 1, 2: 2, 1: 5, 0: 6}
 
 @register_strategy("UCS")
 class UCSStrategy(MoveStrategy):
+    def __init__(self):
+        super().__init__()
+        self.metrics = SearchMetrics()
+
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
     ) -> Direction:
         legal = snapshot.legal_moves_for(snake_id)
         snake = snapshot.snake(snake_id)
+        start_time = time.perf_counter()
         
         if not legal or not snapshot.apples:
             return snake.direction
@@ -244,12 +268,13 @@ class UCSStrategy(MoveStrategy):
                            0,
                            next(counter),
                            start_state,
-                           None
+                           None,
+                           0
                         ),
                        )
 
         while frontier:
-            current_cost, _, current_state, first_move = heapq.heappop(frontier)
+            current_cost, _, current_state, first_move, initial_cost = heapq.heappop(frontier)
 
             if current_cost > best_cost[current_state]:
                 continue
@@ -257,8 +282,12 @@ class UCSStrategy(MoveStrategy):
             head, _ = current_state
 
             if head in apples:
+                self.metrics.execution_time += time.perf_counter() - start_time
+                self.metrics.cost += initial_cost
+                self.metrics.print_metrics()
                 return first_move
 
+            self.metrics.states_expanded += 1
             for direction in Direction:
 
                 dx, dy = direction.vector
@@ -269,7 +298,8 @@ class UCSStrategy(MoveStrategy):
 
                 free_neighbour_of_next_move = count_free_neighbours(snapshot, next_move, blocked)
                 penalty_of_next_move = PENALTY[free_neighbour_of_next_move]
-                new_cost = current_cost + 1 + penalty_of_next_move
+                step_cost = 1 + penalty_of_next_move
+                new_cost = current_cost + step_cost
 
                 if not in_bound(snapshot, next_move) or next_move in blocked:
                     continue
@@ -279,30 +309,39 @@ class UCSStrategy(MoveStrategy):
 
                     if first_move is None:
                         new_first_move = direction
+                        initial_cost = step_cost
                     else:
                         new_first_move = first_move
-
-                    # new_first_move = direction if first_move is None else first_move
 
                     heapq.heappush(frontier,
                        (
                            new_cost,
                            next(counter),
                            next_state,
-                           new_first_move
+                           new_first_move,
+                           initial_cost
                         ),
                        )
+                    self.metrics.states_generated += 1
 
         # return rng.choice(legal) # bisa coba pake fallback
+        self.metrics.execution_time += time.perf_counter() - start_time
+        self.metrics.cost += initial_cost
+        self.metrics.print_metrics()
         return snake.direction if snake.direction in legal else legal[0] #fallback
 
 @register_strategy("GreedyBFS")
 class GreedyBFSStrategy(MoveStrategy):
+    def __init__(self):
+        super().__init__()
+        self.metrics = SearchMetrics()
+
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
     ) -> Direction:
         legal = snapshot.legal_moves_for(snake_id)
         snake = snapshot.snake(snake_id)
+        start_time = time.perf_counter()
         
         if not legal or not snapshot.apples:
             return snake.direction
@@ -334,8 +373,11 @@ class GreedyBFSStrategy(MoveStrategy):
             head, _ = current_state
 
             if head in apples:
+                self.metrics.execution_time += time.perf_counter() - start_time
+                self.metrics.print_metrics()
                 return first_move
 
+            self.metrics.states_expanded += 1
             for direction in Direction:
                 dx, dy = direction.vector
                 head_x, head_y = head
@@ -360,8 +402,6 @@ class GreedyBFSStrategy(MoveStrategy):
                 else:
                     new_first_move = first_move
 
-                # new_first_move = direction if first_move is None else first_move
-
                 heapq.heappush(frontier,
                     (
                         distance,
@@ -370,7 +410,10 @@ class GreedyBFSStrategy(MoveStrategy):
                         new_first_move
                     ),
                     )
+                self.metrics.states_generated += 1
 
+        self.metrics.execution_time += time.perf_counter() - start_time
+        self.metrics.print_metrics()
         # return rng.choice(legal) # bisa coba pake fallback
         return snake.direction if snake.direction in legal else legal[0] #fallback
             
