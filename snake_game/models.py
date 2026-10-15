@@ -43,10 +43,10 @@ class GameConfig:
     rows: int = 20
     columns: int = 20
     move_limit: int = 200
-    ai_speed: int = 10 #4
-    apple_count: int = 10 # 5
+    ai_speed: int = 4
+    apple_count: int = 5
     mode: GameMode = GameMode.SINGLE
-    strategy_name: str = "GreedyBFS"
+    strategy_name: str = "Greedy"
     secondary_strategy_name: str = "Safe Random"
 
     def __post_init__(self) -> None:
