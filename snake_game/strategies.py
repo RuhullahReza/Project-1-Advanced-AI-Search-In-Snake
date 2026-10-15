@@ -11,6 +11,7 @@ from itertools import count
 
 from .models import Direction, GameSnapshot, Position, MinimaxState, SnakeView
 from .engine import AI_ID
+import time
 
 class SearchMetrics:
     def __init__(self):
@@ -23,6 +24,33 @@ class SearchMetrics:
     def print_metrics(self):
         print("States generated:", self.states_generated)
         print("States expanded:", self.states_expanded)
+
+class AdversarialMetrics:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.states_generated = 0 
+        self.states_evaluated = 0
+        self.number_of_pruned_branch = 0
+        self.number_of_cuttof = 0
+        self.total_time = 0.0
+        self.moves = 0
+
+    def print_metrics(self, name: str, depth: int, snapshot: GameSnapshot, snake_id: str, move: Direction):
+        snake = snapshot.snake(snake_id)
+        next_head = convert_direction_to_next_move(snake.body[0], move)
+        score = snake.score + (1 if next_head in snapshot.apples else 0)
+        print(f"algorithm:{name}")
+        print(f"depth:{depth}")
+        print(f"time:{self.total_time:.3f}s")
+        print(f"score:{score}")
+        print(f"states_generated:{self.states_generated}")
+        print(f"states_evaludatd:{self.states_evaluated}")
+        print(f"number_of_pruned_branch:{self.number_of_pruned_branch}")
+        print(f"number_of_cuttof:{self.number_of_cuttof}")
+
+
 class MoveStrategy(ABC):
     """Base class for every automated snake movement method."""
 
@@ -468,6 +496,8 @@ class AStarStrategy(MoveStrategy):
                         heapq.heappush(queue, (f, g, next_move, path + [next_move]))
 
         return None
+
+    
 @register_strategy("IDA*")
 class IDAStarStrategy(MoveStrategy):
 
@@ -620,17 +650,23 @@ class IDAStarStrategy(MoveStrategy):
                     smallest_threshold = next_threshold
 
         return None, smallest_threshold
-
-
     
 MAX_DEPTH = 8
 WIN_SCORE = 10000
 
 @register_strategy("Minimax")
 class MinimaxStrategy(MoveStrategy):
+    def __init__(self):
+        self.metrics = AdversarialMetrics()
+
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
     ) -> Direction:
+        if snapshot.rounds_completed == 0:
+            self.metrics.reset()
+
+        t0 = time.perf_counter()
+
         legal = snapshot.legal_moves_for(snake_id)
         our_snake = snapshot.snake(snake_id)
         if not legal or not snapshot.apples:
@@ -651,13 +687,19 @@ class MinimaxStrategy(MoveStrategy):
         values = []
         for move in legal:
             child_node = apply_move(root, current_player_id, move)
+            self.metrics.states_generated += 1
             value = self._minimax(child_node, MAX_DEPTH - 1, opponent_id, current_player_id, opponent_id)
             values.append(value)
 
         best_value = max(values)
         best_moves = [move for move, value in zip(legal, values) if value == best_value]
-
-        return rng.choice(best_moves)
+        
+        chosen = rng.choice(best_moves)
+        self.metrics.total_time += time.perf_counter() - t0
+        self.metrics.moves += 1
+        self.metrics.print_metrics("Minimax", MAX_DEPTH, snapshot, snake_id, chosen)
+        
+        return chosen
         
     def _minimax(self, 
                 state: MinimaxState, 
@@ -667,11 +709,13 @@ class MinimaxStrategy(MoveStrategy):
 
         result = terminal_value(state, current_player)
         if result is not None:
+            self.metrics.states_evaluated += 1
             # game selesai return hasil
             return result
 
         moves = legal_moves(state, current_turn)
         if len(moves) == 0:
+            self.metrics.states_evaluated += 1
             if current_turn == current_player:
                 # tidak ada move yang bisa di ambil current player
                 return -WIN_SCORE
@@ -680,6 +724,7 @@ class MinimaxStrategy(MoveStrategy):
                 return +WIN_SCORE
 
         if depth == 0:
+            self.metrics.states_evaluated += 1
             return evaluate(state, current_player)
 
         if current_turn == current_player:
@@ -690,6 +735,7 @@ class MinimaxStrategy(MoveStrategy):
         values = []
         for move in moves:
             child_node = apply_move(state, current_turn, move)
+            self.metrics.states_generated += 1
             node_value = self._minimax(child_node, depth-1, next_turn, current_player, opponent)
             values.append(node_value)
 
@@ -700,9 +746,17 @@ class MinimaxStrategy(MoveStrategy):
 
 @register_strategy("Alpha beta pruning")
 class ABPruningStrategy(MoveStrategy):
+    def __init__(self):
+        self.metrics = AdversarialMetrics()
+
     def choose_move(
         self, snapshot: GameSnapshot, snake_id: str, rng: Random
     ) -> Direction:
+        if snapshot.rounds_completed == 0:
+            self.metrics.reset()
+
+        t0 = time.perf_counter()                                
+
         legal = snapshot.legal_moves_for(snake_id)
         our_snake = snapshot.snake(snake_id)
         if not legal or not snapshot.apples:
@@ -724,6 +778,7 @@ class ABPruningStrategy(MoveStrategy):
         values = []
         for move in legal:
             child_node = apply_move(root, current_player_id, move)
+            self.metrics.states_generated += 1
             value = self._alpha_beta(child_node, MAX_DEPTH - 1, opponent_id, current_player_id, opponent_id, best - 1, float('inf'))
             values.append(value)
             best = max(best, value)
@@ -731,7 +786,12 @@ class ABPruningStrategy(MoveStrategy):
         best_value = max(values)
         best_moves = [move for move, value in zip(legal, values) if value == best_value]
 
-        return rng.choice(best_moves)
+        chosen = rng.choice(best_moves)                     
+        self.metrics.total_time += time.perf_counter() - t0        
+        self.metrics.moves += 1                                    
+        self.metrics.print_metrics("Alpha Beta Prunning",MAX_DEPTH, snapshot, snake_id, chosen)  
+        
+        return chosen
         
     def _alpha_beta(self, 
                 state: MinimaxState, 
@@ -743,11 +803,13 @@ class ABPruningStrategy(MoveStrategy):
 
         result = terminal_value(state, current_player)
         if result is not None:
+            self.metrics.states_evaluated += 1
             # game selesai
             return result
 
         moves = legal_moves(state, current_turn)
         if len(moves) == 0:
+            self.metrics.states_evaluated += 1
             if current_turn == current_player:
                 # tidak ada move yang bisa di ambil current player
                 return -WIN_SCORE
@@ -756,29 +818,36 @@ class ABPruningStrategy(MoveStrategy):
                 return +WIN_SCORE
             
         if depth == 0:
+            self.metrics.states_evaluated += 1
             return evaluate(state, current_player)
 
         if current_turn == current_player:
             next_turn = opponent
             best = -float('inf')
-            for move in moves:
+            for i, move in enumerate(moves):
                 child_node = apply_move(state, current_turn, move)
+                self.metrics.states_generated += 1
                 value = self._alpha_beta(child_node, depth - 1, next_turn, current_player, opponent, alpha, beta)
                 best = max(best, value)
                 alpha = max(alpha, best)
                 if alpha >= beta:
+                    self.metrics.number_of_cuttof += 1
+                    self.metrics.number_of_pruned_branch += len(moves) - i - 1
                     break
 
             return best
         else:
             next_turn = current_player
             best = float('inf')
-            for move in moves:
+            for i, move in enumerate(moves):
                 child_node = apply_move(state, current_turn, move)
+                self.metrics.states_generated += 1
                 value = self._alpha_beta(child_node, depth - 1, next_turn, current_player, opponent, alpha, beta)
                 best = min(best, value)
                 beta = min(beta, best)
                 if alpha >= beta:
+                    self.metrics.number_of_cuttof += 1
+                    self.metrics.number_of_pruned_branch += len(moves) - i - 1
                     break
 
             return best

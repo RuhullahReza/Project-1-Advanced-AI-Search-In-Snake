@@ -1,5 +1,6 @@
 """Line-oriented alternative for terminal and screen-reader users."""
 import argparse
+import random
 import time
 
 from .engine import AI_ID, HUMAN_ID, GameEngine
@@ -33,6 +34,7 @@ def main(argv=None):
     parser.add_argument("--mode", choices=["single", "versus", "ai-vs-ai"], default="single")
     parser.add_argument("--strategy", choices=list(STRATEGY_REGISTRY), default="Greedy")
     parser.add_argument("--strategy-2", choices=list(STRATEGY_REGISTRY), default="Safe Random")
+    parser.add_argument("--seed", type=int, default=None, help="make sure random state reproducable")
     args = parser.parse_args(argv)
     try:
         modes = {
@@ -46,7 +48,7 @@ def main(argv=None):
                             secondary_strategy_name=args.strategy_2)
     except ValueError as exc:
         parser.error(str(exc))
-    engine = GameEngine(config)
+    engine = GameEngine(config, rng=random.Random(args.seed))
     workers = {}
 
     def close_workers():
@@ -67,7 +69,7 @@ def main(argv=None):
                 continue
             if command == "restart":
                 close_workers()
-                engine = GameEngine(config)
+                engine = GameEngine(config, rng=random.Random(args.seed))
             elif command in ("next", "up", "down", "left", "right") and engine.status is GameStatus.RUNNING:
                 active_id = engine.active_snake_id
                 human_turn = config.mode is GameMode.VERSUS and active_id == HUMAN_ID
